@@ -2,12 +2,12 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <title>Historial de Licencias</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Historial del Médico</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
   <!-- React -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 
   <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -15,315 +15,232 @@
   <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Firebase UMD (compat) -->
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <!-- Firebase -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+    window.firebaseModules = { initializeApp, getFirestore, collection, onSnapshot, getAuth, signInAnonymously };
+  </script>
 </head>
 
 <body class="bg-gray-100">
   <div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useEffect } = React;
+<script type="text/babel">
 
-    // ================= FIREBASE =================
-    const firebaseConfig = {
-      apiKey: "AIzaSyB6AKWdDANzAjr5OHeskhT_KF_Gyco2fVY",
-      authDomain: "guardias-5c5d9.firebaseapp.com",
-      projectId: "guardias-5c5d9"
-    };
+const { useState, useEffect } = React;
+const { initializeApp, getFirestore, collection, onSnapshot, getAuth, signInAnonymously } = window.firebaseModules;
 
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.firestore();
-    firebase.auth().signInAnonymously();
-    // ============================================
-function HistorialGuardias({ medicoId, guardias, plantilla, medicos, estaDeLicencia }) {
-  const [mes, setMes] = React.useState('');
+/* 🔐 Firebase config — MISMAS credenciales */
+const firebaseConfig = {
+  apiKey: "AIzaSyB6AKWdDANzAjr5OHeskhT_KF_Gyco2fVY",
+  authDomain: "guardias-5c5d9.firebaseapp.com",
+  projectId: "guardias-5c5d9"
+};
 
-  if (!medicoId) {
-    return <p className="text-gray-500 italic">Seleccione un médico.</p>;
-  }
+/* ===================== HELPERS ===================== */
+const formatDate = (iso) => {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+};
 
-  const formatDate = (iso) => {
-    if (!iso) return '';
-    const [y, m, d] = iso.split('-');
-    return `${d}/${m}/${y}`;
-  };
+/* ===================== HISTORIAL LICENCIAS ===================== */
+function HistorialLicencias({ medicoId, licencias }) {
+  const [anio, setAnio] = useState('');
+
+  if (!medicoId) return <p className="italic text-gray-500">Seleccione un médico.</p>;
+
+  const filtradas = licencias
+    .filter(l =>
+      String(l.medicoId) === String(medicoId) &&
+      (!anio || l.desde.startsWith(anio))
+    )
+    .sort((a, b) => a.desde.localeCompare(b.desde));
+
+  const anios = [...new Set(licencias.map(l => l.desde.slice(0,4)))].sort().reverse();
+
+  return (
+    <div className="space-y-4">
+      <select
+        className="border p-2 rounded"
+        value={anio}
+        onChange={e => setAnio(e.target.value)}
+      >
+        <option value="">Todos los años</option>
+        {anios.map(a => <option key={a} value={a}>{a}</option>)}
+      </select>
+
+      <table className="w-full border text-sm">
+        <thead className="bg-gray-200">
+          <tr>
+            <th className="border p-2">Motivo</th>
+            <th className="border p-2">Desde</th>
+            <th className="border p-2">Hasta</th>
+            <th className="border p-2">Detalle</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtradas.map((l, i) => (
+            <tr key={i}>
+              <td className="border p-2">{l.motivo}</td>
+              <td className="border p-2">{formatDate(l.desde)}</td>
+              <td className="border p-2">{formatDate(l.hasta)}</td>
+              <td className="border p-2">{l.detalleCobertura || ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {filtradas.length === 0 && <p className="italic text-gray-500">Sin licencias.</p>}
+    </div>
+  );
+}
+
+/* ===================== HISTORIAL GUARDIAS ===================== */
+function HistorialGuardias({ medicoId, guardias, plantilla, medicos, licencias }) {
+  const [mes, setMes] = useState('');
+
+  if (!medicoId) return <p className="italic text-gray-500">Seleccione un médico.</p>;
+
+  const estaDeLicencia = (id, fecha) =>
+    licencias.some(l => String(l.medicoId) === String(id) && fecha >= l.desde && fecha <= l.hasta);
 
   const resultados = [];
   const resumen = { propia: 0, extra: 0, cobertura: 0, arreglo: 0 };
 
   if (mes) {
-    const [year, month] = mes.split('-').map(Number);
-    const daysInMonth = new Date(year, month, 0).getDate();
+    const [y, m] = mes.split('-').map(Number);
+    const dias = new Date(y, m, 0).getDate();
 
-    for (let d = 1; d <= daysInMonth; d++) {
-      const fechaISO = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const g = guardias[fechaISO];
+    for (let d = 1; d <= dias; d++) {
+      const fecha = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const g = guardias[fecha];
       if (!g) continue;
 
-      const dayOfWeek = new Date(year, month - 1, d).getDay();
-      const p = plantilla[dayOfWeek];
-
+      const p = plantilla[new Date(y, m-1, d).getDay()];
       const slots = [
-        { key: 'dia1', label: 'Día 1' },
-        { key: 'dia2', label: 'Día 2' },
-        { key: 'noche1', label: 'Noche 1' },
-        { key: 'noche2', label: 'Noche 2' }
+        ['dia1','Día 1'],['dia2','Día 2'],['noche1','Noche 1'],['noche2','Noche 2']
       ];
 
-      slots.forEach(({ key, label }) => {
-        const slot = g[key];
-        if (!slot || slot.estado !== 'CUBIERTA') return;
-        if (String(slot.medicoId) !== String(medicoId)) return;
+      slots.forEach(([k, label]) => {
+        const s = g[k];
+        if (!s || s.estado !== 'CUBIERTA' || String(s.medicoId) !== String(medicoId)) return;
 
-        let tipo = 'Extra';
-        let detalle = '';
+        let tipo = 'Extra', detalle = 'Extra';
 
-        if (slot.tipoPago === 'PERSONAL') {
-          tipo = 'Arreglo';
-          detalle = 'Personal';
-          resumen.arreglo++;
+        if (s.tipoPago === 'PERSONAL') {
+          tipo = 'Arreglo'; detalle = 'Personal'; resumen.arreglo++;
+        } else if (p?.[k]?.medicoId === medicoId) {
+          tipo = 'Propia'; detalle = 'Titular'; resumen.propia++;
+        } else if (!p?.[k]?.medicoId) {
+          tipo = 'Cobertura vacante'; detalle = 'Vacante'; resumen.cobertura++;
+        } else if (estaDeLicencia(p[k].medicoId, fecha)) {
+          tipo = 'Cobertura licencia';
+          const t = medicos.find(m => String(m.id) === String(p[k].medicoId));
+          detalle = t ? `Cubre a ${t.nombre}` : 'Licencia';
+          resumen.cobertura++;
         } else {
-          const titularId = p?.[key]?.medicoId;
-
-          if (titularId && String(titularId) === String(medicoId)) {
-            tipo = 'Propia';
-            detalle = 'Titular';
-            resumen.propia++;
-          } else if (!titularId) {
-            tipo = 'Cobertura vacante';
-            detalle = 'Vacante';
-            resumen.cobertura++;
-          } else if (estaDeLicencia(titularId, fechaISO)) {
-            tipo = 'Cobertura licencia';
-            const tit = medicos.find(m => String(m.id) === String(titularId));
-            detalle = tit ? `Cubre a ${tit.nombre}` : 'Licencia';
-            resumen.cobertura++;
-          } else {
-            tipo = 'Extra';
-            detalle = 'Extra';
-            resumen.extra++;
-          }
+          resumen.extra++;
         }
 
-        resultados.push({
-          fecha: fechaISO,
-          turno: label,
-          tipo,
-          detalle
-        });
+        resultados.push({ fecha, turno: label, tipo, detalle });
       });
     }
   }
 
-  const copiar = () => {
-    if (!resultados.length) return;
-    let texto = "Fecha\tTurno\tTipo\tDetalle\n";
-    resultados.forEach(r => {
-      texto += `${formatDate(r.fecha)}\t${r.turno}\t${r.tipo}\t${r.detalle}\n`;
-    });
-    navigator.clipboard.writeText(texto).then(() => alert("Historial copiado"));
-  };
-
   return (
     <div className="space-y-4">
-      <div>
-        <label className="text-sm font-bold text-gray-600">Mes</label>
-        <input
-          type="month"
-          value={mes}
-          onChange={e => setMes(e.target.value)}
-          className="p-2 border rounded w-full"
-        />
-      </div>
+      <input type="month" value={mes} onChange={e => setMes(e.target.value)}
+        className="border p-2 rounded" />
 
       {mes && (
         <div className="flex gap-4 text-sm font-bold">
-          <span className="text-blue-700">Propias: {resumen.propia}</span>
-          <span className="text-yellow-700">Extras: {resumen.extra}</span>
-          <span className="text-purple-700">Coberturas: {resumen.cobertura}</span>
-          <span className="text-orange-700">Arreglos: {resumen.arreglo}</span>
+          <span>Propias: {resumen.propia}</span>
+          <span>Extras: {resumen.extra}</span>
+          <span>Coberturas: {resumen.cobertura}</span>
+          <span>Arreglos: {resumen.arreglo}</span>
         </div>
       )}
 
-      {resultados.length > 0 && (
-        <>
-          <button
-            onClick={copiar}
-            className="px-3 py-1 bg-blue-600 text-white rounded text-sm"
-          >
-            Copiar historial
-          </button>
+      <table className="w-full border text-sm">
+        <thead className="bg-gray-200">
+          <tr>
+            <th className="border p-2">Fecha</th>
+            <th className="border p-2">Turno</th>
+            <th className="border p-2">Tipo</th>
+            <th className="border p-2">Detalle</th>
+          </tr>
+        </thead>
+        <tbody>
+          {resultados.map((r,i) => (
+            <tr key={i}>
+              <td className="border p-2">{formatDate(r.fecha)}</td>
+              <td className="border p-2">{r.turno}</td>
+              <td className="border p-2 font-bold">{r.tipo}</td>
+              <td className="border p-2">{r.detalle}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
-          <table className="w-full border text-sm">
-            <thead className="bg-gray-100">
-              <tr>
-                <th className="border p-2">Fecha</th>
-                <th className="border p-2">Turno</th>
-                <th className="border p-2">Tipo</th>
-                <th className="border p-2">Detalle</th>
-              </tr>
-            </thead>
-            <tbody>
-              {resultados.map((r, i) => (
-                <tr key={i}>
-                  <td className="border p-2">{formatDate(r.fecha)}</td>
-                  <td className="border p-2">{r.turno}</td>
-                  <td className="border p-2 font-bold">{r.tipo}</td>
-                  <td className="border p-2">{r.detalle}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
-
-      {mes && resultados.length === 0 && (
-        <p className="italic text-gray-500">Sin guardias en este mes.</p>
-      )}
+      {mes && resultados.length === 0 && <p className="italic">Sin guardias.</p>}
     </div>
   );
 }
 
-    function App() {
-      const [medicos, setMedicos] = useState([]);
-      const [licencias, setLicencias] = useState([]);
+/* ===================== APP ===================== */
+function App() {
+  const [medicos, setMedicos] = useState([]);
+  const [licencias, setLicencias] = useState([]);
+  const [guardias, setGuardias] = useState({});
+  const [plantilla, setPlantilla] = useState({});
+  const [medicoId, setMedicoId] = useState('');
+  const [tab, setTab] = useState('licencias');
 
-      const [medicoId, setMedicoId] = useState("");
-      const [anio, setAnio] = useState("");
+  useEffect(() => {
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+    signInAnonymously(auth);
 
-      // 🔥 LISTENERS FIRESTORE
-      useEffect(() => {
-        const unsubMedicos = db.collection("medicos").onSnapshot(snap =>
-          setMedicos(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-        );
+    onSnapshot(collection(db,'medicos'), s =>
+      setMedicos(s.docs.map(d => ({ id: d.id, ...d.data() })))
+    );
+    onSnapshot(collection(db,'licencias'), s =>
+      setLicencias(s.docs.map(d => d.data()))
+    );
+    onSnapshot(collection(db,'guardias'), s => {
+      const o={}; s.docs.forEach(d => o[d.id]=d.data()); setGuardias(o);
+    });
+    onSnapshot(collection(db,'plantilla'), s => {
+      const o={}; s.docs.forEach(d => o[d.id]=d.data()); setPlantilla(o);
+    });
+  }, []);
 
-        const unsubLicencias = db.collection("licencias").onSnapshot(snap =>
-          setLicencias(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-        );
+  return (
+    <div className="max-w-4xl mx-auto p-4 space-y-4">
+      <h1 className="text-2xl font-bold">Historial del Médico</h1>
 
-        return () => {
-          unsubMedicos();
-          unsubLicencias();
-        };
-      }, []);
+      <select className="border p-2 rounded w-full"
+        value={medicoId} onChange={e=>setMedicoId(e.target.value)}>
+        <option value="">Seleccione un médico</option>
+        {medicos.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+      </select>
 
-      // ================= HELPERS =================
-      const medicosOrdenados = [...medicos].sort((a, b) =>
-        (a.nombre || "").localeCompare(b.nombre || "")
-      );
+      <div className="flex gap-2">
+        <button onClick={()=>setTab('licencias')} className={tab==='licencias'?'font-bold':''}>Licencias</button>
+        <button onClick={()=>setTab('guardias')} className={tab==='guardias'?'font-bold':''}>Guardias</button>
+      </div>
 
-      const aniosDisponibles = Array.from(
-        new Set(licencias.map(l => l.desde?.slice(0, 4)))
-      )
-        .filter(Boolean)
-        .sort((a, b) => b.localeCompare(a));
+      {tab === 'licencias' && <HistorialLicencias medicoId={medicoId} licencias={licencias} />}
+      {tab === 'guardias' && <HistorialGuardias medicoId={medicoId} guardias={guardias} plantilla={plantilla} medicos={medicos} licencias={licencias} />}
+    </div>
+  );
+}
 
-      const formatDate = iso => {
-        if (!iso) return "";
-        const [y, m, d] = iso.split("-");
-        return `${d}/${m}/${y}`;
-      };
-
-      const historial = licencias
-        .filter(l =>
-          medicoId &&
-          String(l.medicoId) === String(medicoId) &&
-          (!anio || l.desde?.startsWith(anio))
-        )
-        .sort((a, b) => a.desde.localeCompare(b.desde));
-
-      const copiarTabla = () => {
-        if (!historial.length) return;
-
-        let texto = "Motivo\tDesde\tHasta\tDetalle\n";
-        historial.forEach(l => {
-          texto += `${l.motivo}\t${formatDate(l.desde)}\t${formatDate(l.hasta)}\t${l.detalleCobertura || ""}\n`;
-        });
-
-        navigator.clipboard.writeText(texto)
-          .then(() => alert("Historial copiado al portapapeles"));
-      };
-      // ============================================
-
-      return (
-        <div className="max-w-4xl mx-auto p-4">
-          <h1 className="text-2xl font-bold mb-4">
-            Historial de Licencias
-          </h1>
-
-          {/* SELECT MÉDICO */}
-          <select
-            className="w-full p-2 border rounded mb-4"
-            value={medicoId}
-            onChange={e => setMedicoId(e.target.value)}
-          >
-            <option value="">Seleccione un médico</option>
-            {medicosOrdenados.map(m => (
-              <option key={m.id} value={m.id}>
-                {m.nombre}
-              </option>
-            ))}
-          </select>
-
-          {/* SELECT AÑO */}
-          <select
-            className="w-full p-2 border rounded mb-4"
-            value={anio}
-            onChange={e => setAnio(e.target.value)}
-          >
-            <option value="">Todos los años</option>
-            {aniosDisponibles.map(a => (
-              <option key={a} value={a}>{a}</option>
-            ))}
-          </select>
-
-          {historial.length > 0 && (
-            <button
-              onClick={copiarTabla}
-              className="mb-3 px-3 py-1 bg-blue-600 text-white rounded text-sm"
-            >
-              Copiar historial
-            </button>
-          )}
-
-          <table className="w-full bg-white border text-sm">
-            <thead className="bg-gray-200">
-              <tr>
-                <th className="border p-2">Motivo</th>
-                <th className="border p-2">Desde</th>
-                <th className="border p-2">Hasta</th>
-                <th className="border p-2">Detalle</th>
-              </tr>
-            </thead>
-            <tbody>
-              {historial.map(l => (
-                <tr key={l.id}>
-                  <td className="border p-2">{l.motivo}</td>
-                  <td className="border p-2">{formatDate(l.desde)}</td>
-                  <td className="border p-2">{formatDate(l.hasta)}</td>
-                  <td className="border p-2">{l.detalleCobertura || ""}</td>
-                </tr>
-              ))}
-
-              {medicoId && historial.length === 0 && (
-                <tr>
-                  <td colSpan="4" className="p-4 text-center text-gray-500 italic">
-                    Sin licencias registradas
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      );
-    }
-
-    ReactDOM
-      .createRoot(document.getElementById("root"))
-      .render(<App />);
-  </script>
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
 </body>
 </html>
