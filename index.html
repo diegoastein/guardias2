@@ -38,6 +38,154 @@
     const db = firebase.firestore();
     firebase.auth().signInAnonymously();
     // ============================================
+function HistorialGuardias({ medicoId, guardias, plantilla, medicos, estaDeLicencia }) {
+  const [mes, setMes] = React.useState('');
+
+  if (!medicoId) {
+    return <p className="text-gray-500 italic">Seleccione un médico.</p>;
+  }
+
+  const formatDate = (iso) => {
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  };
+
+  const resultados = [];
+  const resumen = { propia: 0, extra: 0, cobertura: 0, arreglo: 0 };
+
+  if (mes) {
+    const [year, month] = mes.split('-').map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const fechaISO = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const g = guardias[fechaISO];
+      if (!g) continue;
+
+      const dayOfWeek = new Date(year, month - 1, d).getDay();
+      const p = plantilla[dayOfWeek];
+
+      const slots = [
+        { key: 'dia1', label: 'Día 1' },
+        { key: 'dia2', label: 'Día 2' },
+        { key: 'noche1', label: 'Noche 1' },
+        { key: 'noche2', label: 'Noche 2' }
+      ];
+
+      slots.forEach(({ key, label }) => {
+        const slot = g[key];
+        if (!slot || slot.estado !== 'CUBIERTA') return;
+        if (String(slot.medicoId) !== String(medicoId)) return;
+
+        let tipo = 'Extra';
+        let detalle = '';
+
+        if (slot.tipoPago === 'PERSONAL') {
+          tipo = 'Arreglo';
+          detalle = 'Personal';
+          resumen.arreglo++;
+        } else {
+          const titularId = p?.[key]?.medicoId;
+
+          if (titularId && String(titularId) === String(medicoId)) {
+            tipo = 'Propia';
+            detalle = 'Titular';
+            resumen.propia++;
+          } else if (!titularId) {
+            tipo = 'Cobertura vacante';
+            detalle = 'Vacante';
+            resumen.cobertura++;
+          } else if (estaDeLicencia(titularId, fechaISO)) {
+            tipo = 'Cobertura licencia';
+            const tit = medicos.find(m => String(m.id) === String(titularId));
+            detalle = tit ? `Cubre a ${tit.nombre}` : 'Licencia';
+            resumen.cobertura++;
+          } else {
+            tipo = 'Extra';
+            detalle = 'Extra';
+            resumen.extra++;
+          }
+        }
+
+        resultados.push({
+          fecha: fechaISO,
+          turno: label,
+          tipo,
+          detalle
+        });
+      });
+    }
+  }
+
+  const copiar = () => {
+    if (!resultados.length) return;
+    let texto = "Fecha\tTurno\tTipo\tDetalle\n";
+    resultados.forEach(r => {
+      texto += `${formatDate(r.fecha)}\t${r.turno}\t${r.tipo}\t${r.detalle}\n`;
+    });
+    navigator.clipboard.writeText(texto).then(() => alert("Historial copiado"));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="text-sm font-bold text-gray-600">Mes</label>
+        <input
+          type="month"
+          value={mes}
+          onChange={e => setMes(e.target.value)}
+          className="p-2 border rounded w-full"
+        />
+      </div>
+
+      {mes && (
+        <div className="flex gap-4 text-sm font-bold">
+          <span className="text-blue-700">Propias: {resumen.propia}</span>
+          <span className="text-yellow-700">Extras: {resumen.extra}</span>
+          <span className="text-purple-700">Coberturas: {resumen.cobertura}</span>
+          <span className="text-orange-700">Arreglos: {resumen.arreglo}</span>
+        </div>
+      )}
+
+      {resultados.length > 0 && (
+        <>
+          <button
+            onClick={copiar}
+            className="px-3 py-1 bg-blue-600 text-white rounded text-sm"
+          >
+            Copiar historial
+          </button>
+
+          <table className="w-full border text-sm">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="border p-2">Fecha</th>
+                <th className="border p-2">Turno</th>
+                <th className="border p-2">Tipo</th>
+                <th className="border p-2">Detalle</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resultados.map((r, i) => (
+                <tr key={i}>
+                  <td className="border p-2">{formatDate(r.fecha)}</td>
+                  <td className="border p-2">{r.turno}</td>
+                  <td className="border p-2 font-bold">{r.tipo}</td>
+                  <td className="border p-2">{r.detalle}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {mes && resultados.length === 0 && (
+        <p className="italic text-gray-500">Sin guardias en este mes.</p>
+      )}
+    </div>
+  );
+}
 
     function App() {
       const [medicos, setMedicos] = useState([]);
