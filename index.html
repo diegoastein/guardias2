@@ -1,246 +1,182 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <title>Historial del Médico</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
-  <!-- React -->
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-
-  <!-- Babel -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-  <!-- Tailwind -->
-  <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- Firebase -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
-    import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
-    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
-    window.firebaseModules = { initializeApp, getFirestore, collection, onSnapshot, getAuth, signInAnonymously };
-  </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control de Pagos - Guardias Pediátricas</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
 </head>
+<body class="bg-gray-100 text-gray-900">
+    <div id="root"></div>
 
-<body class="bg-gray-100">
-  <div id="root"></div>
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
 
-<script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
 
-const { useState, useEffect } = React;
-const { initializeApp, getFirestore, collection, onSnapshot, getAuth, signInAnonymously } = window.firebaseModules;
+        // Credenciales originales extraídas de index.html
+        const firebaseConfig = {
+            apiKey: "AIzaSyB6AKWdDANzAjr5OHeskhT_KF_Gyco2fVY",
+            authDomain: "guardias-5c5d9.firebaseapp.com",
+            projectId: "guardias-5c5d9",
+            storageBucket: "guardias-5c5d9.firebasestorage.app",
+            messagingSenderId: "954058300552",
+            appId: "1:954058300552:web:00135945002743e223d33d"
+        };
 
-/* 🔐 Firebase config — MISMAS credenciales */
-const firebaseConfig = {
-  apiKey: "AIzaSyB6AKWdDANzAjr5OHeskhT_KF_Gyco2fVY",
-  authDomain: "guardias-5c5d9.firebaseapp.com",
-  projectId: "guardias-5c5d9"
-};
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
 
-/* ===================== HELPERS ===================== */
-const formatDate = (iso) => {
-  if (!iso) return '';
-  const [y, m, d] = iso.split('-');
-  return `${d}/${m}/${y}`;
-};
+        function App() {
+            const [medicos, setMedicos] = useState([]);
+            const [guardias, setGuardias] = useState({});
+            const [pagos, setPagos] = useState({}); // Nueva colección para persistir el estado de cobro
+            const [mesSeleccionado, setMesSeleccionado] = useState(new Date().toISOString().slice(0, 7));
+            const [medicoIdSeleccionado, setMedicoIdSeleccionado] = useState('');
 
-/* ===================== HISTORIAL LICENCIAS ===================== */
-function HistorialLicencias({ medicoId, licencias }) {
-  const [anio, setAnio] = useState('');
+            // Listeners de datos
+            useEffect(() => {
+                signInAnonymously(auth);
+                const unsubMedicos = onSnapshot(collection(db, 'medicos'), (snap) => setMedicos(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
+                const unsubGuardias = onSnapshot(collection(db, 'guardias'), (snap) => {
+                    const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setGuardias(d);
+                });
+                const unsubPagos = onSnapshot(collection(db, 'pagos_control'), (snap) => {
+                    const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setPagos(d);
+                });
+                return () => { unsubMedicos(); unsubGuardias(); unsubPagos(); };
+            }, []);
 
-  if (!medicoId) return <p className="italic text-gray-500">Seleccione un médico.</p>;
+            // Lógica para filtrar guardias del mes y determinar quién debe cobrar
+            const guardiasDelMes = useMemo(() => {
+                const results = [];
+                Object.entries(guardias).forEach(([fecha, data]) => {
+                    if (fecha.startsWith(mesSeleccionado)) {
+                        const slots = [data.dia1, data.dia2, data.noche1, data.noche2];
+                        slots.forEach((slot, index) => {
+                            if (slot && slot.estado === 'CUBIERTA' && slot.tipoPago === 'SISTEMA') {
+                                // Quien cobra es el prestadorId si existe, sino el medicoId
+                                const idCobrador = slot.prestadorId || slot.medicoId;
+                                results.push({
+                                    id: `${fecha}-${index}`,
+                                    fecha,
+                                    turno: index < 2 ? 'Día' : 'Noche',
+                                    medicoRealizo: slot.medicoId,
+                                    idCobrador,
+                                    esDerivada: !!slot.prestadorId && slot.prestadorId !== slot.medicoId
+                                });
+                            }
+                        });
+                    }
+                });
+                return results;
+            }, [guardias, mesSeleccionado]);
 
-  const filtradas = licencias
-    .filter(l =>
-      String(l.medicoId) === String(medicoId) &&
-      (!anio || l.desde.startsWith(anio))
-    )
-    .sort((a, b) => a.desde.localeCompare(b.desde));
+            // Médicos que tienen guardias a cobrar este mes
+            const medicosConCobros = useMemo(() => {
+                const ids = [...new Set(guardiasDelMes.map(g => g.idCobrador))];
+                return medicos.filter(m => ids.includes(String(m.id))).sort((a,b) => a.nombre.localeCompare(b.nombre));
+            }, [guardiasDelMes, medicos]);
 
-  const anios = [...new Set(licencias.map(l => l.desde.slice(0,4)))].sort().reverse();
+            const togglePago = async (guardiaId) => {
+                const docId = `${mesSeleccionado}-${guardiaId}`;
+                const estadoActual = pagos[docId]?.cobrado || false;
+                await setDoc(doc(db, 'pagos_control', docId), { cobrado: !estadoActual });
+            };
 
-  return (
-    <div className="space-y-4">
-      <select
-        className="border p-2 rounded"
-        value={anio}
-        onChange={e => setAnio(e.target.value)}
-      >
-        <option value="">Todos los años</option>
-        {anios.map(a => <option key={a} value={a}>{a}</option>)}
-      </select>
+            const guardiasDelMedico = guardiasDelMes.filter(g => String(g.idCobrador) === String(medicoIdSeleccionado));
 
-      <table className="w-full border text-sm">
-        <thead className="bg-gray-200">
-          <tr>
-            <th className="border p-2">Motivo</th>
-            <th className="border p-2">Desde</th>
-            <th className="border p-2">Hasta</th>
-            <th className="border p-2">Detalle</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtradas.map((l, i) => (
-            <tr key={i}>
-              <td className="border p-2">{l.motivo}</td>
-              <td className="border p-2">{formatDate(l.desde)}</td>
-              <td className="border p-2">{formatDate(l.hasta)}</td>
-              <td className="border p-2">{l.detalleCobertura || ''}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+            return (
+                <div className="max-w-5xl mx-auto p-4 sm:p-8">
+                    <header className="mb-8 border-b pb-4">
+                        <h1 className="text-2xl font-bold text-blue-700">Control de Pagos de Guardias</h1>
+                        <p className="text-gray-600 italic">Módulo administrativo de conciliación</p>
+                    </header>
 
-      {filtradas.length === 0 && <p className="italic text-gray-500">Sin licencias.</p>}
-    </div>
-  );
-}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                        <div className="bg-white p-4 rounded shadow">
+                            <label className="block text-sm font-bold mb-2">Seleccionar Mes:</label>
+                            <input type="month" className="w-full border p-2 rounded" 
+                                value={mesSeleccionado} onChange={(e) => {setMesSeleccionado(e.target.value); setMedicoIdSeleccionado('');}} />
+                        </div>
+                        <div className="bg-white p-4 rounded shadow">
+                            <label className="block text-sm font-bold mb-2">Médico a Controlar:</label>
+                            <select className="w-full border p-2 rounded" 
+                                value={medicoIdSeleccionado} onChange={(e) => setMedicoIdSeleccionado(e.target.value)}>
+                                <option value="">Seleccione un médico...</option>
+                                {medicosConCobros.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                            </select>
+                        </div>
+                    </div>
 
-/* ===================== HISTORIAL GUARDIAS ===================== */
-function HistorialGuardias({ medicoId, guardias, plantilla, medicos, licencias }) {
-  const [mes, setMes] = useState('');
+                    {medicoIdSeleccionado && (
+                        <div className="bg-white rounded shadow overflow-hidden mb-8">
+                            <table className="w-full text-left">
+                                <thead className="bg-blue-50">
+                                    <tr>
+                                        <th className="p-3 border-b text-sm">Fecha</th>
+                                        <th className="p-3 border-b text-sm">Turno</th>
+                                        <th className="p-3 border-b text-sm">Información de Cobro</th>
+                                        <th className="p-3 border-b text-sm text-center">¿Cobró?</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {guardiasDelMedico.map(g => {
+                                        const cobrado = pagos[`${mesSeleccionado}-${g.id}`]?.cobrado;
+                                        const medicoHizo = medicos.find(m => String(m.id) === String(g.medicoRealizo))?.nombre;
+                                        return (
+                                            <tr key={g.id} className={cobrado ? "bg-green-50" : ""}>
+                                                <td className="p-3 border-b">{g.fecha.split('-').reverse().join('/')}</td>
+                                                <td className="p-3 border-b">{g.turno}</td>
+                                                <td className="p-3 border-b text-xs">
+                                                    {g.esDerivada ? (
+                                                        <span className="text-orange-600 font-medium">
+                                                            Derivada de: {medicoHizo}
+                                                        </span>
+                                                    ) : "Guardia Propia / Extra"}
+                                                </td>
+                                                <td className="p-3 border-b text-center">
+                                                    <input type="checkbox" className="w-5 h-5 cursor-pointer" 
+                                                        checked={cobrado || false} onChange={() => togglePago(g.id)} />
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
 
-  if (!medicoId) return <p className="italic text-gray-500">Seleccione un médico.</p>;
-
-  const estaDeLicencia = (id, fecha) =>
-    licencias.some(l => String(l.medicoId) === String(id) && fecha >= l.desde && fecha <= l.hasta);
-
-  const resultados = [];
-  const resumen = { propia: 0, extra: 0, cobertura: 0, arreglo: 0 };
-
-  if (mes) {
-    const [y, m] = mes.split('-').map(Number);
-    const dias = new Date(y, m, 0).getDate();
-
-    for (let d = 1; d <= dias; d++) {
-      const fecha = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-      const g = guardias[fecha];
-      if (!g) continue;
-
-      const p = plantilla[new Date(y, m-1, d).getDay()];
-      const slots = [
-        ['dia1','Día 1'],['dia2','Día 2'],['noche1','Noche 1'],['noche2','Noche 2']
-      ];
-
-      slots.forEach(([k, label]) => {
-        const s = g[k];
-        if (!s || s.estado !== 'CUBIERTA' || String(s.medicoId) !== String(medicoId)) return;
-
-        let tipo = 'Extra', detalle = 'Extra';
-
-        if (s.tipoPago === 'PERSONAL') {
-          tipo = 'Arreglo'; detalle = 'Personal'; resumen.arreglo++;
-        } else if (p?.[k]?.medicoId === medicoId) {
-          tipo = 'Propia'; detalle = 'Titular'; resumen.propia++;
-        } else if (!p?.[k]?.medicoId) {
-          tipo = 'Cobertura vacante'; detalle = 'Vacante'; resumen.cobertura++;
-        } else if (estaDeLicencia(p[k].medicoId, fecha)) {
-          tipo = 'Cobertura licencia';
-          const t = medicos.find(m => String(m.id) === String(p[k].medicoId));
-          detalle = t ? `Cubre a ${t.nombre}` : 'Licencia';
-          resumen.cobertura++;
-        } else {
-          resumen.extra++;
+                    <div className="bg-gray-800 text-white p-6 rounded-lg shadow-lg">
+                        <h2 className="text-xl font-bold mb-4 border-b border-gray-600 pb-2">Informe de Deudas del Mes</h2>
+                        <div className="space-y-2">
+                            {guardiasDelMes.filter(g => !pagos[`${mesSeleccionado}-${g.id}`]?.cobrado).length === 0 ? (
+                                <p className="text-green-400 font-medium">✓ Todos los pagos del mes están al día.</p>
+                            ) : (
+                                guardiasDelMes.filter(g => !pagos[`${mesSeleccionado}-${g.id}`]?.cobrado).map(g => {
+                                    const cobrador = medicos.find(m => String(m.id) === String(g.idCobrador))?.nombre;
+                                    return (
+                                        <div key={g.id} className="flex justify-between border-b border-gray-700 py-1 text-sm">
+                                            <span><span className="text-red-400 font-bold">{cobrador}</span> - {g.fecha.split('-').reverse().join('/')} ({g.turno})</span>
+                                            <span className="text-gray-400 italic">Pendiente</span>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
         }
 
-        resultados.push({ fecha, turno: label, tipo, detalle });
-      });
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <input type="month" value={mes} onChange={e => setMes(e.target.value)}
-        className="border p-2 rounded" />
-
-      {mes && (
-        <div className="flex gap-4 text-sm font-bold">
-          <span>Propias: {resumen.propia}</span>
-          <span>Extras: {resumen.extra}</span>
-          <span>Coberturas: {resumen.cobertura}</span>
-          <span>Arreglos: {resumen.arreglo}</span>
-        </div>
-      )}
-
-      <table className="w-full border text-sm">
-        <thead className="bg-gray-200">
-          <tr>
-            <th className="border p-2">Fecha</th>
-            <th className="border p-2">Turno</th>
-            <th className="border p-2">Tipo</th>
-            <th className="border p-2">Detalle</th>
-          </tr>
-        </thead>
-        <tbody>
-          {resultados.map((r,i) => (
-            <tr key={i}>
-              <td className="border p-2">{formatDate(r.fecha)}</td>
-              <td className="border p-2">{r.turno}</td>
-              <td className="border p-2 font-bold">{r.tipo}</td>
-              <td className="border p-2">{r.detalle}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {mes && resultados.length === 0 && <p className="italic">Sin guardias.</p>}
-    </div>
-  );
-}
-
-/* ===================== APP ===================== */
-function App() {
-  const [medicos, setMedicos] = useState([]);
-  const [licencias, setLicencias] = useState([]);
-  const [guardias, setGuardias] = useState({});
-  const [plantilla, setPlantilla] = useState({});
-  const [medicoId, setMedicoId] = useState('');
-  const [tab, setTab] = useState('licencias');
-
-  useEffect(() => {
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-    const auth = getAuth(app);
-    signInAnonymously(auth);
-
-    onSnapshot(collection(db,'medicos'), s =>
-      setMedicos(s.docs.map(d => ({ id: d.id, ...d.data() })))
-    );
-    onSnapshot(collection(db,'licencias'), s =>
-      setLicencias(s.docs.map(d => d.data()))
-    );
-    onSnapshot(collection(db,'guardias'), s => {
-      const o={}; s.docs.forEach(d => o[d.id]=d.data()); setGuardias(o);
-    });
-    onSnapshot(collection(db,'plantilla'), s => {
-      const o={}; s.docs.forEach(d => o[d.id]=d.data()); setPlantilla(o);
-    });
-  }, []);
-
-  return (
-    <div className="max-w-4xl mx-auto p-4 space-y-4">
-      <h1 className="text-2xl font-bold">Historial del Médico</h1>
-
-      <select className="border p-2 rounded w-full"
-        value={medicoId} onChange={e=>setMedicoId(e.target.value)}>
-        <option value="">Seleccione un médico</option>
-        {medicos.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-      </select>
-
-      <div className="flex gap-2">
-        <button onClick={()=>setTab('licencias')} className={tab==='licencias'?'font-bold':''}>Licencias</button>
-        <button onClick={()=>setTab('guardias')} className={tab==='guardias'?'font-bold':''}>Guardias</button>
-      </div>
-
-      {tab === 'licencias' && <HistorialLicencias medicoId={medicoId} licencias={licencias} />}
-      {tab === 'guardias' && <HistorialGuardias medicoId={medicoId} guardias={guardias} plantilla={plantilla} medicos={medicos} licencias={licencias} />}
-    </div>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-</script>
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
 </body>
 </html>
