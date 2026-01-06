@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Control de Pagos - Versión Corregida</title>
+    <title>Control de Pagos - Solo Vacantes y Licencias</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -35,8 +35,9 @@
         function App() {
             const [medicos, setMedicos] = useState([]);
             const [guardias, setGuardias] = useState({});
+            const [plantilla, setPlantilla] = useState({});
             const [pagos, setPagos] = useState({});
-            const [mesSeleccionado, setMesSeleccionado] = useState("2025-01"); // Forzado a Enero para probar
+            const [mesSeleccionado, setMesSeleccionado] = useState("2025-01");
             const [medicoIdSeleccionado, setMedicoIdSeleccionado] = useState('');
 
             useEffect(() => {
@@ -44,6 +45,9 @@
                 onSnapshot(collection(db, 'medicos'), (snap) => setMedicos(snap.docs.map(d => ({ ...d.data(), id: d.id }))));
                 onSnapshot(collection(db, 'guardias'), (snap) => {
                     const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setGuardias(d);
+                });
+                onSnapshot(collection(db, 'plantilla'), (snap) => {
+                    const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setPlantilla(d);
                 });
                 onSnapshot(collection(db, 'pagos_control'), (snap) => {
                     const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setPagos(d);
@@ -54,33 +58,38 @@
                 const results = [];
                 Object.entries(guardias).forEach(([fecha, data]) => {
                     if (fecha.startsWith(mesSeleccionado)) {
+                        // Obtener día de la semana para la plantilla (0-6)
+                        const diaSemana = new Date(fecha + "T12:00:00").getDay();
+                        const p = plantilla[diaSemana] || {};
+
                         const slots = [
-                            { s: data.dia1, n: 'Día 1' }, { s: data.dia2, n: 'Día 2' },
-                            { s: data.noche1, n: 'Noche 1' }, { s: data.noche2, n: 'Noche 2' }
+                            { s: data.dia1, t: p.dia1, n: 'Día 1' },
+                            { s: data.dia2, t: p.dia2, n: 'Día 2' },
+                            { s: data.noche1, t: p.noche1, n: 'Noche 1' },
+                            { s: data.noche2, t: p.noche2, n: 'Noche 2' }
                         ];
 
                         slots.forEach((slot, index) => {
                             const s = slot.s;
-                            // Criterio: Está cubierta, es de sistema y tiene un receptor de cobro (prestador o medicoId)
+                            const t = slot.t; // Médico titular en plantilla
+
                             if (s?.estado === 'CUBIERTA' && s?.tipoPago === 'SISTEMA') {
                                 const idCobrador = s.prestadorId || s.medicoId;
-                                
-                                // Si hay prestadorId SIEMPRE es un reemplazo/derivación
-                                // Si NO hay prestadorId, verificamos si es una vacante o si simplemente no se grabó el titular
-                                const esDerivada = s.prestadorId && (s.prestadorId !== s.medicoId);
-                                const esVacante = s.estado === 'VACANTE' || !s.medicoId;
+                                const idTitular = t?.medicoId;
 
-                                // Para asegurar que no falten médicos como Sánchez o Abdenur, 
-                                // incluimos toda guardia que tenga un prestadorId asignado 
-                                // O que el médico que la hizo NO sea el mismo que cobra
-                                if (idCobrador) {
+                                // LÓGICA DE FILTRADO:
+                                // 1. Es VACANTE (No hay titular en plantilla)
+                                // 2. Es LICENCIA (Hay titular, pero cobra otro)
+                                const esVacante = !idTitular;
+                                const esReemplazo = idTitular && String(idCobrador) !== String(idTitular);
+
+                                if (esVacante || esReemplazo) {
                                     results.push({
                                         id: `${fecha}-${index}`,
                                         fecha,
                                         turno: slot.n,
-                                        medicoQueHizo: s.medicoId,
-                                        idCobrador: idCobrador,
-                                        motivo: esDerivada ? `REEMPLAZO / DERIVACIÓN` : (esVacante ? "VACANTE" : "GUARDIA EXTRA"),
+                                        idCobrador,
+                                        motivo: esVacante ? "VACANTE" : `REEMPLAZO DE ${medicos.find(m => String(m.id) === String(idTitular))?.nombre || 'TITULAR'}`,
                                         cobrado: pagos[`${mesSeleccionado}-${fecha}-${index}`]?.cobrado || false
                                     });
                                 }
@@ -89,7 +98,7 @@
                     }
                 });
                 return results;
-            }, [guardias, medicos, mesSeleccionado, pagos]);
+            }, [guardias, plantilla, medicos, mesSeleccionado, pagos]);
 
             const medicosConActividad = useMemo(() => {
                 const ids = [...new Set(guardiasFiltradas.map(g => g.idCobrador))];
@@ -101,42 +110,52 @@
                 await setDoc(doc(db, 'pagos_control', docId), { cobrado: !pagos[docId]?.cobrado });
             };
 
-            const guardiasDelMedico = guardiasFiltradas.filter(g => String(g.idCobrador) === String(medicoIdSeleccionado));
-
             return (
                 <div className="max-w-4xl mx-auto p-6">
-                    <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border-t-4 border-indigo-600">
-                        <h1 className="text-2xl font-bold text-slate-800">Control de Pagos (Enero disponible)</h1>
+                    <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border-t-4 border-blue-600">
+                        <h1 className="text-2xl font-bold text-slate-800">Control de Pagos Ministerio</h1>
+                        <p className="text-sm text-slate-500">Solo Reemplazos y Vacantes</p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
-                            <input type="month" className="border rounded-lg p-3 outline-none focus:ring-2 focus:ring-indigo-500" 
+                            <input type="month" className="border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500" 
                                 value={mesSeleccionado} onChange={(e) => setMesSeleccionado(e.target.value)} />
-                            <select className="border rounded-lg p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+                            <select className="border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-500"
                                 value={medicoIdSeleccionado} onChange={(e) => setMedicoIdSeleccionado(e.target.value)}>
-                                <option value="">Seleccionar Médico ({medicosConActividad.length} encontrados)...</option>
+                                <option value="">Médicos a cobrar ({medicosConActividad.length})...</option>
                                 {medicosConActividad.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
                             </select>
                         </div>
                     </div>
 
-                    {medicoIdSeleccionado ? (
-                        <div className="space-y-4">
-                            {guardiasDelMedico.map(g => (
-                                <div key={g.id} className={`flex justify-between items-center p-4 rounded-lg shadow-sm border ${g.cobrado ? 'bg-green-50 border-green-200' : 'bg-white border-slate-200'}`}>
+                    {medicoIdSeleccionado && (
+                        <div className="space-y-3">
+                            {guardiasFiltradas.filter(g => String(g.idCobrador) === String(medicoIdSeleccionado)).map(g => (
+                                <div key={g.id} className={`flex justify-between items-center p-4 rounded-lg border shadow-sm ${g.cobrado ? 'bg-green-50 border-green-200' : 'bg-white border-slate-200'}`}>
                                     <div>
-                                        <div className={`font-bold ${g.cobrado ? 'text-green-700' : 'text-slate-700'}`}>{g.fecha.split('-').reverse().join('/')} - {g.turno}</div>
-                                        <div className="text-xs text-slate-500 uppercase font-bold">{g.motivo}</div>
+                                        <div className="font-bold text-slate-800">{g.fecha.split('-').reverse().join('/')} - {g.turno}</div>
+                                        <div className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded inline-block ${g.motivo === 'VACANTE' ? 'bg-orange-100 text-orange-700' : 'bg-purple-100 text-purple-700'}`}>
+                                            {g.motivo}
+                                        </div>
                                     </div>
-                                    <button onClick={() => togglePago(g.id)} className={`px-4 py-2 rounded-full text-xs font-bold transition ${g.cobrado ? 'bg-green-600 text-white' : 'bg-slate-100 text-slate-600 border'}`}>
-                                        {g.cobrado ? '✓ PAGADA' : 'MARCAR PAGO'}
+                                    <button onClick={() => togglePago(g.id)} className={`px-5 py-2 rounded-full text-xs font-bold transition ${g.cobrado ? 'bg-green-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-red-50 hover:text-red-600'}`}>
+                                        {g.cobrado ? '✓ COBRADO' : 'PENDIENTE'}
                                     </button>
                                 </div>
                             ))}
                         </div>
-                    ) : (
-                        <div className="text-center p-10 bg-white rounded-xl border-2 border-dashed text-slate-400">
-                            Seleccione un médico para ver sus guardias de reemplazo o vacantes.
-                        </div>
                     )}
+
+                    <div className="mt-8 bg-slate-900 rounded-xl p-6 text-white shadow-xl">
+                        <h2 className="text-orange-400 font-bold text-xs uppercase tracking-widest mb-4">Resumen de Deudas del Mes</h2>
+                        <div className="max-h-60 overflow-y-auto">
+                            {guardiasFiltradas.filter(g => !g.cobrado).length === 0 ? <p className="text-xs text-green-400 italic">No hay deudas este mes.</p> : 
+                            guardiasFiltradas.filter(g => !g.cobrado).map(g => (
+                                <div key={g.id} className="flex justify-between border-b border-slate-800 py-2 text-xs">
+                                    <span className="font-medium">{medicos.find(m => String(m.id) === String(g.idCobrador))?.nombre}</span>
+                                    <span className="text-slate-500">{g.fecha.split('-').reverse().join('/')} ({g.turno})</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
                 </div>
             );
         }
