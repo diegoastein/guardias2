@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Control de Pagos - Solo Reemplazos y Vacantes</title>
+    <title>Control de Pagos - Conciliación Completa</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-100 text-gray-900">
+<body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
@@ -35,7 +35,6 @@
         function App() {
             const [medicos, setMedicos] = useState([]);
             const [guardias, setGuardias] = useState({});
-            const [plantilla, setPlantilla] = useState({});
             const [pagos, setPagos] = useState({});
             const [mesSeleccionado, setMesSeleccionado] = useState(new Date().toISOString().slice(0, 7));
             const [medicoIdSeleccionado, setMedicoIdSeleccionado] = useState('');
@@ -46,9 +45,6 @@
                 onSnapshot(collection(db, 'guardias'), (snap) => {
                     const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setGuardias(d);
                 });
-                onSnapshot(collection(db, 'plantilla'), (snap) => {
-                    const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setPlantilla(d);
-                });
                 onSnapshot(collection(db, 'pagos_control'), (snap) => {
                     const d = {}; snap.docs.forEach(x => d[x.id] = x.data()); setPagos(d);
                 });
@@ -58,32 +54,27 @@
                 const results = [];
                 Object.entries(guardias).forEach(([fecha, data]) => {
                     if (fecha.startsWith(mesSeleccionado)) {
-                        const fechaObj = new Date(fecha + "T12:00:00");
-                        const p = plantilla[fechaObj.getDay()];
-                        
                         const slots = [
-                            { s: data.dia1, t: p?.dia1, n: 'Día 1' },
-                            { s: data.dia2, t: p?.dia2, n: 'Día 2' },
-                            { s: data.noche1, t: p?.noche1, n: 'Noche 1' },
-                            { s: data.noche2, t: p?.noche2, n: 'Noche 2' }
+                            { s: data.dia1, n: 'Día 1' }, { s: data.dia2, n: 'Día 2' },
+                            { s: data.noche1, n: 'Noche 1' }, { s: data.noche2, n: 'Noche 2' }
                         ];
 
                         slots.forEach((slot, index) => {
-                            if (slot.s?.estado === 'CUBIERTA' && slot.s?.tipoPago === 'SISTEMA') {
-                                const idCobrador = slot.s.prestadorId || slot.s.medicoId;
-                                const idTitular = slot.t?.medicoId;
+                            const s = slot.s;
+                            if (s?.estado === 'CUBIERTA' && s?.tipoPago === 'SISTEMA') {
+                                const idCobrador = s.prestadorId || s.medicoId;
+                                const esReemplazo = s.prestadorId && (s.prestadorId !== s.medicoId);
+                                const esVacante = s.nota?.toLowerCase().includes('vacante') || !s.medicoId;
 
-                                // LÓGICA: Solo incluir si NO es guardia propia (Cobrador != Titular) o si el titular es vacante
-                                if (!idTitular || String(idCobrador) !== String(idTitular)) {
+                                if (esReemplazo || esVacante) {
                                     results.push({
                                         id: `${fecha}-${index}`,
                                         fecha,
                                         turno: slot.n,
-                                        medicoRealizo: slot.s.medicoId,
+                                        medicoQueHizo: s.medicoId,
                                         idCobrador,
-                                        esVacante: !idTitular,
-                                        titularOriginal: idTitular,
-                                        esDerivada: !!slot.s.prestadorId && slot.s.prestadorId !== slot.s.medicoId
+                                        motivo: esVacante ? 'VACANTE' : `REEMPLAZO DE ${medicos.find(m => String(m.id) === String(s.medicoId))?.nombre || 'TITULAR'}`,
+                                        cobrado: pagos[`${mesSeleccionado}-${fecha}-${index}`]?.cobrado || false
                                     });
                                 }
                             }
@@ -91,9 +82,9 @@
                     }
                 });
                 return results;
-            }, [guardias, plantilla, mesSeleccionado]);
+            }, [guardias, medicos, mesSeleccionado, pagos]);
 
-            const medicosConCobros = useMemo(() => {
+            const medicosConActividad = useMemo(() => {
                 const ids = [...new Set(guardiasFiltradas.map(g => g.idCobrador))];
                 return medicos.filter(m => ids.includes(String(m.id))).sort((a,b) => a.nombre.localeCompare(b.nombre));
             }, [guardiasFiltradas, medicos]);
@@ -103,96 +94,79 @@
                 await setDoc(doc(db, 'pagos_control', docId), { cobrado: !pagos[docId]?.cobrado });
             };
 
-            return (
-                <div className="max-w-5xl mx-auto p-4">
-                    <header className="mb-6 border-b pb-4 flex justify-between items-end">
-                        <div>
-                            <h1 className="text-2xl font-bold text-teal-700">Conciliación de Pagos</h1>
-                            <p className="text-sm text-gray-500">Solo Vacantes y Reemplazos de Licencia</p>
-                        </div>
-                        <div className="text-right text-xs text-gray-400">v1.1 - Filtro de Guardias Propias Activo</div>
-                    </header>
+            const guardiasDelMedico = guardiasFiltradas.filter(g => String(g.idCobrador) === String(medicoIdSeleccionado));
+            const pendientes = guardiasDelMedico.filter(g => !g.cobrado);
+            const pagadas = guardiasDelMedico.filter(g => g.cobrado);
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                        <div className="bg-white p-4 rounded shadow">
-                            <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Mes</label>
-                            <input type="month" className="w-full border p-2 rounded" value={mesSeleccionado} onChange={(e) => setMesSeleccionado(e.target.value)} />
-                        </div>
-                        <div className="bg-white p-4 rounded shadow">
-                            <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Médico (Reemplazante o Externo)</label>
-                            <select className="w-full border p-2 rounded" value={medicoIdSeleccionado} onChange={(e) => setMedicoIdSeleccionado(e.target.value)}>
-                                <option value="">Seleccione...</option>
-                                {medicosConCobros.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+            return (
+                <div className="max-w-4xl mx-auto p-6">
+                    <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border-t-4 border-indigo-600">
+                        <h1 className="text-2xl font-bold text-slate-800">Panel de Pagos</h1>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+                            <input type="month" className="border rounded-lg p-3 outline-none focus:ring-2 focus:ring-indigo-500" 
+                                value={mesSeleccionado} onChange={(e) => setMesSeleccionado(e.target.value)} />
+                            <select className="border rounded-lg p-3 outline-none focus:ring-2 focus:ring-indigo-500"
+                                value={medicoIdSeleccionado} onChange={(e) => setMedicoIdSeleccionado(e.target.value)}>
+                                <option value="">Seleccionar Médico...</option>
+                                {medicosConActividad.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
                             </select>
                         </div>
                     </div>
 
                     {medicoIdSeleccionado && (
-                        <div className="bg-white rounded shadow overflow-hidden mb-6">
-                            <table className="w-full text-sm">
-                                <thead className="bg-gray-100">
-                                    <tr>
-                                        <th className="p-3 border-b text-left">Fecha / Turno</th>
-                                        <th className="p-3 border-b text-left">Motivo de Cobro</th>
-                                        <th className="p-3 border-b text-center">Estado</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {guardiasFiltradas.filter(g => String(g.idCobrador) === String(medicoIdSeleccionado)).map(g => {
-                                        const cobrado = pagos[`${mesSeleccionado}-${g.id}`]?.cobrado;
-                                        const nombreTitular = medicos.find(m => String(m.id) === String(g.titularOriginal))?.nombre;
-                                        const nombreRealizo = medicos.find(m => String(m.id) === String(g.medicoRealizo))?.nombre;
-                                        
-                                        return (
-                                            <tr key={g.id} className={cobrado ? "bg-green-50" : "hover:bg-gray-50"}>
-                                                <td className="p-3 border-b">
-                                                    <div className="font-bold">{g.fecha.split('-').reverse().join('/')}</div>
-                                                    <div className="text-xs text-gray-500">{g.turno}</div>
-                                                </td>
-                                                <td className="p-3 border-b">
-                                                    {g.esVacante ? 
-                                                        <span className="text-cyan-700 font-bold text-xs uppercase">Cobertura de Vacante</span> : 
-                                                        <span className="text-purple-700 font-bold text-xs uppercase">Reemplazo de: {nombreTitular}</span>
-                                                    }
-                                                    {g.esDerivada && (
-                                                        <div className="mt-1 text-[10px] bg-blue-100 text-blue-800 px-1 inline-block rounded">
-                                                            Derivación de Cobro: Hizo la guardia {nombreRealizo}
-                                                        </div>
-                                                    )}
-                                                </td>
-                                                <td className="p-3 border-b text-center">
-                                                    <button 
-                                                        onClick={() => togglePago(g.id)}
-                                                        className={`px-3 py-1 rounded text-xs font-bold ${cobrado ? 'bg-green-500 text-white' : 'bg-red-100 text-red-600 border border-red-200'}`}
-                                                    >
-                                                        {cobrado ? 'COBRADO' : 'PENDIENTE'}
-                                                    </button>
+                        <div className="space-y-6">
+                            {/* SECCIÓN PENDIENTES */}
+                            <div className="bg-white rounded-xl shadow-md overflow-hidden border-l-4 border-red-400">
+                                <div className="bg-red-50 px-6 py-3 border-b border-red-100">
+                                    <h2 className="text-red-700 font-bold text-sm uppercase tracking-wider">Guardias Pendientes de Cobro</h2>
+                                </div>
+                                <table className="w-full text-sm">
+                                    <tbody className="divide-y divide-slate-100">
+                                        {pendientes.length === 0 ? <tr><td className="p-6 text-slate-400 italic text-center">No hay pendientes</td></tr> :
+                                         pendientes.map(g => (
+                                            <tr key={g.id} className="hover:bg-slate-50">
+                                                <td className="px-6 py-4 font-bold text-slate-700">{g.fecha.split('-').reverse().join('/')} <span className="text-xs font-normal text-slate-400">({g.turno})</span></td>
+                                                <td className="px-6 py-4 text-xs font-semibold text-slate-500">{g.motivo}</td>
+                                                <td className="px-6 py-4 text-right">
+                                                    <button onClick={() => togglePago(g.id)} className="bg-white border border-red-200 text-red-600 px-4 py-1 rounded-full text-xs font-bold hover:bg-red-600 hover:text-white transition">MARCAR COBRADA</button>
                                                 </td>
                                             </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            {/* SECCIÓN PAGADAS */}
+                            <div className="bg-white rounded-xl shadow-md overflow-hidden border-l-4 border-green-500">
+                                <div className="bg-green-50 px-6 py-3 border-b border-green-100">
+                                    <h2 className="text-green-700 font-bold text-sm uppercase tracking-wider">Historial de Guardias Pagadas</h2>
+                                </div>
+                                <table className="w-full text-sm">
+                                    <tbody className="divide-y divide-slate-100">
+                                        {pagadas.length === 0 ? <tr><td className="p-6 text-slate-400 italic text-center">No hay guardias pagadas</td></tr> :
+                                         pagadas.map(g => (
+                                            <tr key={g.id} className="bg-green-50/30">
+                                                <td className="px-6 py-4 font-bold text-green-700">{g.fecha.split('-').reverse().join('/')} <span className="text-xs font-normal text-green-400">({g.turno})</span></td>
+                                                <td className="px-6 py-4 text-xs font-semibold text-green-600/70">{g.motivo}</td>
+                                                <td className="px-6 py-4 text-right">
+                                                    <button onClick={() => togglePago(g.id)} className="text-green-600 font-bold text-xs flex items-center justify-end gap-1 hover:underline">✓ PAGADA (Deshacer)</button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     )}
 
-                    <div className="bg-gray-900 text-white p-5 rounded-lg">
-                        <h2 className="text-lg font-bold mb-3 text-orange-400">Pendientes de Pago ({mesSeleccionado})</h2>
-                        <div className="grid grid-cols-1 gap-2">
-                            {guardiasFiltradas.filter(g => !pagos[`${mesSeleccionado}-${g.id}`]?.cobrado).length === 0 ? (
-                                <p className="text-sm text-green-400">No hay deudas pendientes en los reemplazos de este mes.</p>
-                            ) : (
-                                guardiasFiltradas.filter(g => !pagos[`${mesSeleccionado}-${g.id}`]?.cobrado).map(g => {
-                                    const cobrador = medicos.find(m => String(m.id) === String(g.idCobrador))?.nombre;
-                                    return (
-                                        <div key={g.id} className="text-xs flex justify-between border-b border-gray-800 pb-1">
-                                            <span><b className="text-gray-300">{cobrador}</b> - {g.fecha.split('-').reverse().join('/')}</span>
-                                            <span className="text-red-400 font-mono">PENDIENTE</span>
-                                        </div>
-                                    );
-                                })
-                            )}
-                        </div>
+                    <div className="mt-8 bg-slate-900 rounded-xl p-6 text-white shadow-xl">
+                        <h2 className="text-orange-400 font-bold text-xs uppercase tracking-widest mb-4">Deudas Generales del Mes</h2>
+                        {guardiasFiltradas.filter(g => !g.cobrado).map(g => (
+                            <div key={g.id} className="flex justify-between border-b border-slate-700 py-2 text-xs">
+                                <span>{medicos.find(m => String(m.id) === String(g.idCobrador))?.nombre}</span>
+                                <span className="text-slate-500">{g.fecha.split('-').reverse().join('/')}</span>
+                            </div>
+                        ))}
                     </div>
                 </div>
             );
